@@ -1,0 +1,14 @@
+{
+    "recommendations": [
+        "databricks.databricks",
+        "ms-python.vscode-pylance",
+        "ms-python.python",
+        "ms-python.debugpy",
+        "ms-python.mypy-type-checker",
+        "redhat.vscode-yaml",
+		"charliermarsh.ruff",
+		"tamasfe.even-better-toml",
+        "JFrog.jfrog-vscode-extension",
+        "bierner.markdown-mermaid"
+    ]
+}

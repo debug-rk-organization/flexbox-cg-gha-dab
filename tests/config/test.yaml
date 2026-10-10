@@ -1,0 +1,15 @@
+---
+catalog-name: flexbox_cg_gha_dab_dev
+schema-name: bronze_flexbox_cg_gha_dab
+tenant-id: 3596192b-fdf5-4e2c-a6fa-acb706c963d8 #P&G Azure Tenant
+#foo-secret: {{secret/scope/key}} # You can specify secrets which need to be resolved by dbutils
+storage:
+  account-name: sa01flexflowchk01dev
+  container-name: schemas
+tables:
+- logical-name: bronze_flexbox_cg_gha_dab_tablename
+  destination-path: bronze_flexbox_cg_gha_dab_tablename
+  source-path: abfss://landing-zone@sa01flexflowchk01dev.dfs.core.windows.net/dab-template-tests/cdl-data-types.csv
+  unity-catalog-table-name: "carrier"
+  tags:
+    cdl_status_intent: "published"

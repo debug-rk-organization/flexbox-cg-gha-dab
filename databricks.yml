@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=bundle_config_schema.json
+# This is a Databricks asset bundle definition for flexbox_cg_gha_dab.
+# See https://docs.databricks.com/dev-tools/bundles/index.html for documentation.
+# Useful Reference: https://docs.databricks.com/en/dev-tools/bundles/settings.html
+
+# This specific file, databricks.yml should contain your "project level" details
+# /resources can contain a file for each databricks workflow/job you create, starting with flexbox_cg_gha_dab_job.yml
+# /resources/environments should contain environment specifics in targets to configure your bundle & jobs for each environment it may be deployed in
+
+bundle:
+  name: flexbox_cg_gha_dab
+  engine: direct
+artifacts:
+  default:
+    type: whl
+    build: uv build
+    path: .
+sync:
+  exclude:
+    - "*"
+
+
+include:
+  - resources/*.yml
+targets:
+  dev:
+    mode: development
+    default: true
+  uat:
+    mode: production
+  prod:
+    mode: production

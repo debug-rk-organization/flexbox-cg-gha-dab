@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+#
+# dcon - locate, start, and join a devcontainer from anywhere inside the project.
+#
+# Usage: run `dcon` from any directory inside a devcontainer project.
+#   1. Walks up the directory tree to find a `.devcontainer` folder.
+#   2. Picks an available container engine (podman preferred, then docker).
+#   3. Runs `devcontainer up` to (re)create/start the container.
+#   4. Joins the current console to the container via `devcontainer exec`.
+#
+# Install:  dcon --install   (copies dcon into your user bin and ensures PATH)
+# Help:     dcon --help
+#
+# All errors are written to stderr to make troubleshooting easier.
+
+set -euo pipefail
+
+# ---- helpers ---------------------------------------------------------------
+
+err() {
+  printf 'dcon: error: %s\n' "$*" >&2
+}
+
+info() {
+  printf 'dcon: %s\n' "$*" >&2
+}
+
+usage() {
+  cat >&2 <<'EOF'
+dcon - locate, start, and join a devcontainer from anywhere inside the project.
+
+Usage:
+  dcon              Start (if needed) and join the devcontainer for the
+                    current directory tree.
+  dcon --install    Install the dcon command into your user bin directory
+                    (~/.local/bin by default) and ensure it is on PATH.
+  dcon -h, --help   Show this help.
+EOF
+}
+
+# ---- --install: copy dcon into the user's bin and ensure it's on PATH ------
+
+install_dc() {
+  # Resolve the absolute path of this script (follow symlinks).
+  local src
+  src="${BASH_SOURCE[0]}"
+  while [[ -L "$src" ]]; do
+    local target
+    target="$(readlink "$src")"
+    if [[ "$target" == /* ]]; then
+      src="$target"
+    else
+      src="$(cd "$(dirname "$src")" && cd "$(dirname "$target")" && pwd)/$(basename "$target")"
+    fi
+  done
+  src="$(cd "$(dirname "$src")" && pwd)/$(basename "$src")"
+
+  # Choose a target bin directory (override with DCON_INSTALL_DIR).
+  local bin_dir="${DCON_INSTALL_DIR:-$HOME/.local/bin}"
+  local dest="$bin_dir/dcon"
+
+  # Warn if a different 'dcon' already exists earlier on PATH (would shadow us).
+  local existing
+  if existing="$(command -v dcon 2>/dev/null)" && [[ "$existing" != "$dest" ]]; then
+    err "note: another 'dcon' already exists on PATH at: $existing"
+    err "depending on PATH order it may take precedence over $dest."
+  fi
+
+  if ! mkdir -p "$bin_dir"; then
+    err "could not create install directory: $bin_dir"
+    exit 1
+  fi
+
+  if [[ "$src" == "$dest" ]]; then
+    info "dcon is already installed at $dest"
+  else
+    if ! cp "$src" "$dest"; then
+      err "failed to copy dcon to $dest"
+      exit 1
+    fi
+    chmod +x "$dest"
+    info "installed dcon to $dest"
+  fi
+
+  # Check whether the bin dir is already on PATH.
+  case ":${PATH}:" in
+    *":${bin_dir}:"*)
+      info "$bin_dir is already on your PATH. You can now run: dcon"
+      ;;
+    *)
+      err "$bin_dir is not on your PATH."
+      err "add this line to your shell profile (~/.bashrc or ~/.zshrc):"
+      err "    export PATH=\"$bin_dir:\$PATH\""
+      err "then restart your shell (or run: source ~/.bashrc)."
+      ;;
+  esac
+}
+
+# ---- step 1: find the workspace folder (nearest .devcontainer ancestor) ----
+
+find_workspace_folder() {
+  local dir
+  dir="$(pwd -P)"
+
+  while [[ -n "$dir" ]]; do
+    if [[ -d "$dir/.devcontainer" ]]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+    # stop once we reach the filesystem root
+    if [[ "$dir" == "/" ]]; then
+      break
+    fi
+    dir="$(dirname "$dir")"
+  done
+
+  return 1
+}
+
+# ---- step 2: pick a container engine ---------------------------------------
+
+find_docker_path() {
+  local engine
+  for engine in podman docker; do
+    if command -v "$engine" >/dev/null 2>&1; then
+      command -v "$engine"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ---- step 0: refuse to run from inside a container -------------------------
+
+running_inside_container() {
+  # Docker drops this marker file; podman uses /run/.containerenv.
+  [[ -f /.dockerenv || -f /run/.containerenv ]] && return 0
+
+  # VS Code / devcontainers and Codespaces set these env vars.
+  [[ -n "${REMOTE_CONTAINERS:-}" \
+     || -n "${DEVCONTAINER:-}" \
+     || -n "${CODESPACES:-}" \
+     || "${REMOTE_CONTAINERS_IPC:-}" != "" ]] && return 0
+
+  # cgroup hints (works on many Linux hosts).
+  if grep -qaE '(docker|podman|containerd|libpod)' /proc/1/cgroup 2>/dev/null; then
+    return 0
+  fi
+
+  return 1
+}
+
+# ---- main ------------------------------------------------------------------
+
+main() {
+  # Handle flags before any container work.
+  case "${1:-}" in
+    --install)
+      install_dc
+      exit 0
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    "")
+      ;;
+    *)
+      err "unknown argument: $1"
+      usage
+      exit 1
+      ;;
+  esac
+
+  # dcon orchestrates the container from the host; it must not run inside one.
+  if running_inside_container; then
+    err "it looks like you're already inside a container/devcontainer."
+    err "run dcon from your host machine, not from within the container."
+    exit 1
+  fi
+
+  # Ensure the devcontainer CLI is available before doing anything else.
+  if ! command -v devcontainer >/dev/null 2>&1; then
+    err "the 'devcontainer' CLI was not found in PATH."
+    err "please install it before running dcon:"
+    err "    npm install -g @devcontainers/cli"
+    err "(requires Node.js / npm: https://nodejs.org/)"
+    exit 1
+  fi
+
+  local workspace_folder
+  if ! workspace_folder="$(find_workspace_folder)"; then
+    err "no .devcontainer folder found in the current directory or any parent."
+    err "run dcon from inside a devcontainer project."
+    exit 1
+  fi
+  info "workspace folder: $workspace_folder"
+
+  local docker_path
+  if ! docker_path="$(find_docker_path)"; then
+    err "no container engine found: neither 'podman' nor 'docker' is in PATH."
+    err "please install one of them before running dcon:"
+    err "    Podman: https://podman.io/docs/installation"
+    err "    Docker: https://docs.docker.com/get-docker/"
+    err "on macOS:        brew install podman   (or install Docker Desktop)"
+    err "on Debian/Ubuntu: sudo apt-get install -y podman   (or docker.io)"
+    exit 1
+  fi
+  info "container engine: $docker_path"
+
+  # ---- step 3: bring the container up -------------------------------------
+  # Re-running `up` on an already-running container is safe; the CLI detects
+  # the existing container and reuses it instead of failing.
+  info "starting container (devcontainer up)..."
+  if ! devcontainer up \
+        --workspace-folder "$workspace_folder" \
+        --docker-path "$docker_path"; then
+    err "'devcontainer up' failed (see output above)."
+    exit 1
+  fi
+
+  # ---- step 4: join the container -----------------------------------------
+  info "joining container (devcontainer exec)..."
+  exec devcontainer exec \
+        --workspace-folder "$workspace_folder" \
+        --docker-path "$docker_path" \
+        bash
+}
+
+main "$@"
